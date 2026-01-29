@@ -9,6 +9,7 @@ import os
 import shutil
 import warnings
 import xml.etree.ElementTree as ET
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal, Optional, Tuple
@@ -21,11 +22,11 @@ from hyp3lib.aws import upload_file_to_s3
 from hyp3lib.image import create_thumbnail
 from hyp3lib.util import string_is_true
 from netCDF4 import Dataset
-from osgeo import gdal
+from osgeo import gdal, osr
 
 from hyp3_autorift import geometry, image, utils
 from hyp3_autorift.crop import crop_netcdf_product
-from hyp3_autorift.utils import get_opendata_prefix, get_platform, save_publication_info
+from hyp3_autorift.utils import get_epsg_code, get_opendata_prefix, get_platform, save_publication_info
 
 
 log = logging.getLogger(__name__)
@@ -295,6 +296,68 @@ def apply_landsat_filtering(reference_path: str, secondary_path: str) -> Tuple[s
     return reference_path, reference_zero_path, secondary_path, secondary_zero_path
 
 
+def get_majority_epsg(file_list: list[str]) -> int:
+    """Find the most common EPSG code among a list of raster files."""
+    epsgs = []
+    for f in file_list:
+        info = gdal.Info(f, format='json')
+        epsgs.append(get_epsg_code(info))
+    
+    # Return the most common EPSG
+    count = Counter(epsgs)
+    return count.most_common(1)[0][0]
+
+
+def ensure_epsg(input_file: str, target_epsg: int) -> str:
+    """
+    Return a path to the file in the target EPSG. 
+    If already correct, return input. If not, create a warped VRT.
+    """
+    info = gdal.Info(input_file, format='json')
+    current_epsg = get_epsg_code(info)
+
+    if current_epsg == target_epsg:
+        return input_file
+    
+    # Create a warped VRT in the 'reprojected' folder
+    reprojected_dir = Path('reprojected')
+    reprojected_dir.mkdir(exist_ok=True)
+    
+    output_vrt = str(reprojected_dir / f"{Path(input_file).stem}_warped.vrt")
+    log.info(f"Reprojecting {input_file} (EPSG:{current_epsg}) to EPSG:{target_epsg}")
+    
+    gdal.Warp(output_vrt, input_file, dstSRS=f'EPSG:{target_epsg}', format='VRT')
+    return output_vrt
+
+
+def create_dummy_dem(output_path: str, bounds: tuple, epsg: int, pixel_size: float = 120):
+    """
+    Create a 0-filled GeoTIFF to act as the Geogrid definition.
+    bounds: (min_x, min_y, max_x, max_y)
+    """
+    min_x, min_y, max_x, max_y = bounds
+    width = int((max_x - min_x) / pixel_size)
+    height = int((max_y - min_y) / pixel_size)
+
+    driver = gdal.GetDriverByName('GTiff')
+    ds = driver.Create(output_path, width, height, 1, gdal.GDT_Byte, options=['COMPRESS=LZW'])    
+    
+    # Set GeoTransform: [top_left_x, w_pixel, rotation, top_left_y, rotation, n_pixel]
+    ds.SetGeoTransform([min_x, pixel_size, 0, max_y, 0, -pixel_size])
+    
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(epsg)
+    ds.SetProjection(srs.ExportToWkt())
+    
+    # Fill with 0 (Flat topography)
+    band = ds.GetRasterBand(1)
+    band.Fill(0)
+    band.SetNoDataValue(-32767)
+    ds.FlushCache()
+    del ds
+    return output_path
+
+
 def process(
     reference: list[str],
     secondary: list[str],
@@ -387,6 +450,19 @@ def process(
                 sec_metas.append(meta)
                 sec_paths.append(get_lc2_path(meta))
 
+        # Pre-unify projections if user overrides Grid/Search parameters
+        common_epsg = None
+        if chip_size is not None and search_range is not None:
+            log.info("User overrides detected: Pre-unifying projections to Common UTM.")
+            # Identify common EPSG from all inputs
+            all_paths = ref_paths + sec_paths
+            common_epsg = get_majority_epsg(all_paths)
+            log.info(f"Majority EPSG identified: {common_epsg}. Reprojecting any outliers...")
+            
+            # Reproject paths in place (updates list with VRT paths if needed)
+            ref_paths = [ensure_epsg(p, common_epsg) for p in ref_paths]
+            sec_paths = [ensure_epsg(p, common_epsg) for p in sec_paths]
+
         # Handle mosaicking/metadata if multiple scenes were provided, otherwise just get metadata from the single scene
         if len(ref_paths) > 1:
             reference_path = f'{reference[0]}.vrt'
@@ -425,16 +501,80 @@ def process(
 
                 reference_path, secondary_path = utils.ensure_same_projection(reference_path, secondary_path)
 
-        assert reference_metadata is not None
-        bbox = reference_metadata['bbox']
-        lat_limits = (bbox[1], bbox[3])
-        lon_limits = (bbox[0], bbox[2])
+        # If user overrides Grid/Search, define a unified common grid. Otherwise, we use the standard parameter file.
+        if chip_size is not None and search_range is not None:
+            log.info("User overrides detected: Unifying projection and generating Dummy DEM.")
 
-        log.info(f'Reference scene path: {reference_path}')
-        log.info(f'Secondary scene path: {secondary_path}')
+            # Generate dummy DEM using unified projected bounds
+            def get_proj_bbox(p):
+                i = gdal.Info(p, format='json')
+                gt = i['geoTransform']
+                x_min = gt[0]
+                y_max = gt[3]
+                x_max = x_min + (gt[1] * i['size'][0])
+                y_min = y_max + (gt[5] * i['size'][1])
+                return [min(x_min, x_max), min(y_min, y_max), max(x_min, x_max), max(y_min, y_max)]
 
-        scene_poly = geometry.polygon_from_bbox(x_limits=lat_limits, y_limits=lon_limits)
-        parameter_info = utils.find_jpl_parameter_info(scene_poly, parameter_file)
+            rb = get_proj_bbox(reference_path)
+            sb = get_proj_bbox(secondary_path)
+
+            union_bounds = [
+                min(rb[0], sb[0]),  # min_x
+                min(rb[1], sb[1]),  # min_y
+                max(rb[2], sb[2]),  # max_x
+                max(rb[3], sb[3])   # max_y
+            ]
+
+            # Determine appropriate pixel size for the dummy DEM based on platform
+            if 'S2' in platform:
+                dummy_pixel_size = 10.0
+            elif platform in ('L7', 'L8', 'L9'):
+                dummy_pixel_size = 15.0 # Panchromatic band
+            elif platform in ('L4', 'L5'):
+                dummy_pixel_size = 30.0 # No Pan band, uses Band 2
+            else:
+                dummy_pixel_size = 10.0 # Default fallback
+
+            dummy_dem_path = str(Path.cwd() / "dummy_dem_common_grid.tif")
+            # Create a 0-filled DEM at the common EPSG to serve as the geogrid canvas
+            create_dummy_dem(dummy_dem_path, union_bounds, common_epsg, pixel_size=dummy_pixel_size)
+
+            # Construct Parameter Info manually
+            parameter_info = {
+                'epsg': common_epsg,
+                'geogrid': {
+                    'dem': dummy_dem_path,
+                    'dhdx': dummy_dem_path, 'dhdy': dummy_dem_path,
+                    'dhdxs': dummy_dem_path,'dhdys': dummy_dem_path,
+                    'vx': dummy_dem_path, 'vy': dummy_dem_path,
+                    'srx': dummy_dem_path, 'sry': dummy_dem_path,
+                    'csminx': dummy_dem_path, 'csminy': dummy_dem_path,
+                    'csmaxx': dummy_dem_path, 'csmaxy': dummy_dem_path,
+                    'ssm': dummy_dem_path, 'sp': dummy_dem_path
+                },
+                'autorift': {
+                    'grid_location': 'window_location.tif',
+                    'init_offset': 'window_offset.tif',
+                    'search_range': 'window_search_range.tif',
+                    'chip_size_min': 'window_chip_size_min.tif',
+                    'chip_size_max': 'window_chip_size_max.tif',
+                    'offset2vx': 'window_rdr_off2vel_x_vec.tif',
+                    'offset2vy': 'window_rdr_off2vel_y_vec.tif',
+                    'scale_factor': 'window_scale_factor.tif',
+                    'mpflag': 0, 'stable_surface_mask': dummy_dem_path,
+                }
+            }
+        else:
+            assert reference_metadata is not None
+            bbox = reference_metadata['bbox']
+            lat_limits = (bbox[1], bbox[3])
+            lon_limits = (bbox[0], bbox[2])
+
+            log.info(f'Reference scene path: {reference_path}')
+            log.info(f'Secondary scene path: {secondary_path}')
+
+            scene_poly = geometry.polygon_from_bbox(x_limits=lat_limits, y_limits=lon_limits)
+            parameter_info = utils.find_jpl_parameter_info(scene_poly, parameter_file)
 
         if chip_size is not None:
             # Add static chipSize to parameter_info geogrid params
@@ -463,6 +603,28 @@ def process(
             secondary_metadata=secondary_metadata,
         )
         geogrid_info = runGeogrid(meta_r, meta_s, epsg=parameter_info['epsg'], **parameter_info['geogrid'])
+
+        # Ensure the SSM passed to autoRIFT matches these dimensions exactly to avoid IndexError.
+        if chip_size is not None and search_range is not None:
+            matched_ssm_path = str(Path.cwd() / "dummy_ssm_matched.tif")
+            rows = geogrid_info['ycount']
+            cols = geogrid_info['xcount']
+            
+            # Create a lightweight Byte-mask of exact dimensions
+            driver = gdal.GetDriverByName('GTiff')
+            ds_ssm = driver.Create(matched_ssm_path, cols, rows, 1, gdal.GDT_Byte, options=['COMPRESS=LZW'])
+            
+            # Copy GeoTransform from original dummy
+            src_ds = gdal.Open(parameter_info['geogrid']['dem'])
+            ds_ssm.SetGeoTransform(src_ds.GetGeoTransform())
+            ds_ssm.SetProjection(src_ds.GetProjection())
+            
+            ds_ssm.GetRasterBand(1).Fill(0)
+            ds_ssm.FlushCache()
+            del ds_ssm
+            
+            # Update the parameter info to use this corrected file
+            parameter_info['autorift']['stable_surface_mask'] = matched_ssm_path
 
         from hyp3_autorift.vend.testautoRIFT import generateAutoriftProduct
 
@@ -506,6 +668,22 @@ def process(
     image.make_browse(browse_file, data)
 
     thumbnail_file = create_thumbnail(browse_file)
+
+    # Remove temporary files generated during projection
+    if chip_size is not None and search_range is not None:
+        temp_files_to_remove = [
+            Path.cwd() / "dummy_dem_common_grid.tif",
+            Path.cwd() / "dummy_ssm_matched.tif"
+        ]
+        if reference_path:
+            temp_files_to_remove.append(Path(reference_path))
+        if secondary_path:
+            temp_files_to_remove.append(Path(secondary_path))
+
+        for p in temp_files_to_remove:
+            if p.exists() and (p.suffix == '.vrt' or 'dummy' in p.name):
+                log.info(f"Removing temporary file: {p}")
+                p.unlink()
 
     return product_file, browse_file, thumbnail_file
 

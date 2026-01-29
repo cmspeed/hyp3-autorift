@@ -525,19 +525,9 @@ def process(
                 max(rb[3], sb[3])   # max_y
             ]
 
-            # Determine appropriate pixel size for the dummy DEM based on platform
-            if 'S2' in platform:
-                dummy_pixel_size = 10.0
-            elif platform in ('L7', 'L8', 'L9'):
-                dummy_pixel_size = 15.0 # Panchromatic band
-            elif platform in ('L4', 'L5'):
-                dummy_pixel_size = 30.0 # No Pan band, uses Band 2
-            else:
-                dummy_pixel_size = 10.0 # Default fallback
-
+            # Create a 120m/pixel 0-filled DEM at the common EPSG to serve as the geogrid canvas
             dummy_dem_path = str(Path.cwd() / "dummy_dem_common_grid.tif")
-            # Create a 0-filled DEM at the common EPSG to serve as the geogrid canvas
-            create_dummy_dem(dummy_dem_path, union_bounds, common_epsg, pixel_size=dummy_pixel_size)
+            create_dummy_dem(dummy_dem_path, union_bounds, common_epsg, pixel_size=120)
 
             # Construct Parameter Info manually
             parameter_info = {

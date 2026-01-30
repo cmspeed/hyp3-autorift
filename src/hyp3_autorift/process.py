@@ -635,6 +635,37 @@ def process(
         raise Exception('Processing failed! Output netCDF file not found')
 
     netcdf_file = Path(netcdf_file)
+
+    # Rename file before final naming scheme is applied (only triggered for multi-scene mosaics)
+    if "_AND_" in reference_metadata.get('id', '') or "_AND_" in secondary_metadata.get('id', ''):
+        # Define helper function to simplify mulit-scene mosiac names
+        def get_clean_id(mosaic_id):
+            base_id = mosaic_id.split('_AND_')[0]
+            parts = base_id.split('_')
+            
+            # Sentinel-2 formatting
+            if base_id.startswith('S2') and len(parts) >= 3:
+                return f"{parts[0]}_{parts[1]}_{parts[2].split('T')[0]}"
+            
+            # Landsat formatting
+            elif base_id.startswith('L') and len(parts) >= 4:
+                return f"{parts[0]}_{parts[1]}_{parts[3]}"
+            
+            return base_id
+
+        ref_clean = get_clean_id(reference_metadata['id'])
+        sec_clean = get_clean_id(secondary_metadata['id'])
+        
+        mosaic_prefix = f"{reference_metadata['id']}_X_{secondary_metadata['id']}"
+        
+        if mosaic_prefix in netcdf_file.name:
+            suffix = netcdf_file.name.replace(mosaic_prefix, "")
+            clean_name = f"{ref_clean}_X_{sec_clean}{suffix}"
+            new_file = netcdf_file.with_name(clean_name)
+            log.info(f"Renaming mosaic output to clean format: {new_file.name}")
+            netcdf_file.rename(new_file)
+            netcdf_file = new_file
+
     if naming_scheme == 'ITS_LIVE_OD':
         product_file = netcdf_file.with_stem(f'{netcdf_file.stem}_IL_ASF_OD')
     else:

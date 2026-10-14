@@ -484,7 +484,9 @@ def runAutorift(
         obj.I1[obj.I1 == 0] = 128
         obj.I2[obj.I2 == 0] = 128
 
-    obj.OverSampleRatio = 64
+    # obj.OverSampleRatio = 64
+    obj.OverSampleRatio = 128
+    print("Overriding autoRIFT OverSampleRatio to 128")
     # OverSampleRatio can be assigned as a scalar (such as the above line) or as a Python dictionary below for
     # intelligent use (ChipSize-dependent). Here, four chip sizes are used: ChipSize0X*[1,2,4,8] and four
     # OverSampleRatio are considered [16,32,64,128]. The intelligent selection of OverSampleRatio (as a function of
@@ -493,21 +495,21 @@ def runAutorift(
     # 128 and chip size of ChipSize0X*8 are considered). The selection for the optical data flag is based on Landsat-8
     # data over an inland region (thus stable and not moving much) of Greenland, while that for the radar flag
     # (optflag = 0) is based on Sentinel-1 data over the same region of Greenland.
-    if CSMINx0 is not None:
-        if optflag == 1:
-            obj.OverSampleRatio = {
-                obj.ChipSize0X: 16,
-                obj.ChipSize0X * 2: 32,
-                obj.ChipSize0X * 4: 64,
-                obj.ChipSize0X * 8: 64,
-            }
-        else:
-            obj.OverSampleRatio = {
-                obj.ChipSize0X: 32,
-                obj.ChipSize0X * 2: 64,
-                obj.ChipSize0X * 4: 128,
-                obj.ChipSize0X * 8: 128,
-            }
+    # if CSMINx0 is not None:
+    #     if optflag == 1:
+    #         obj.OverSampleRatio = {
+    #             obj.ChipSize0X: 16,
+    #             obj.ChipSize0X * 2: 32,
+    #             obj.ChipSize0X * 4: 64,
+    #             obj.ChipSize0X * 8: 64,
+    #         }
+    #     else:
+    #         obj.OverSampleRatio = {
+    #             obj.ChipSize0X: 32,
+    #             obj.ChipSize0X * 2: 64,
+    #             obj.ChipSize0X * 4: 128,
+    #             obj.ChipSize0X * 8: 128,
+    #         }
 
     # run Autorift
     t1 = time.time()
@@ -650,34 +652,38 @@ def generateAutoriftProduct(
         band = None
         ds = None
 
-    if chip_size_min is None and 'ChipSizeX' in kwargs:
-        print(f"Using static chip size {kwargs['ChipSizeX']} from kwargs (creating arrays manually).")
+    # Dynamic Chip Size Arrays
+    if chip_size_min is None and ('ChipSizeMinX' in kwargs or 'ChipSizeX' in kwargs):
+        print("Using spatially uniform chip size arrays from kwargs (ignoring shapefile maps).")
 
         if xGrid is None:
             raise Exception("Cannot set static chip size: grid_location (xGrid) is not loaded.")
 
-        # Get the static chip size value
-        static_chip_x = int(kwargs['ChipSizeX'])
-        static_chip_y = int(kwargs.get('ChipSizeY', static_chip_x))  # Default to square
+        # Extract Min and Max
+        min_x = int(kwargs.get('ChipSizeMinX', kwargs.get('ChipSizeX', 16)))
+        min_y = int(kwargs.get('ChipSizeMinY', min_x))
+        max_x = int(kwargs.get('ChipSizeMaxX', kwargs.get('ChipSizeX', 32)))
+        max_y = int(kwargs.get('ChipSizeMaxY', max_x))
 
-        # Create the constant arrays for CSMIN and CSMAX
-        CSMINx0 = np.full(xGrid.shape, static_chip_x, dtype=np.int32)
-        CSMINy0 = np.full(xGrid.shape, static_chip_y, dtype=np.int32)
-        CSMAXx0 = np.full(xGrid.shape, static_chip_x, dtype=np.int32)
-        CSMAXy0 = np.full(xGrid.shape, static_chip_y, dtype=np.int32)
+        # Create constant arrays for CSMIN and CSMAX
+        CSMINx0 = np.full(xGrid.shape, min_x, dtype=np.int32)
+        CSMINy0 = np.full(xGrid.shape, min_y, dtype=np.int32)
+        CSMAXx0 = np.full(xGrid.shape, max_x, dtype=np.int32)
+        CSMAXy0 = np.full(xGrid.shape, max_y, dtype=np.int32)
 
-    # Static Search Range Override
+    # Dynamic Search Range Arrays
     if 'SearchLimitX' in kwargs and kwargs['SearchLimitX'] is not None:
-        print(f"Using static Search Range {kwargs['SearchLimitX']} from kwargs.")
+        print(f"Using uniform Search Range of {kwargs['SearchLimitX']}px from kwargs.")
 
         if xGrid is None:
              raise Exception("Cannot set static search range: grid_location (xGrid) is not loaded.")
 
-        search_limit = int(kwargs['SearchLimitX'])
+        search_limit_x = int(kwargs['SearchLimitX'])
+        search_limit_y = int(kwargs.get('SearchLimitY', search_limit_x))
 
-        # Overwrite the SRx0/SRy0 arrays with a constant array of our desired search range.
-        SRx0 = np.full(xGrid.shape, search_limit, dtype=np.float32)
-        SRy0 = np.full(xGrid.shape, search_limit, dtype=np.float32)
+        # Overwrite SRx0/SRy0 arrays with the constant pixel limits
+        SRx0 = np.full(xGrid.shape, search_limit_x, dtype=np.float32)
+        SRy0 = np.full(xGrid.shape, search_limit_y, dtype=np.float32)
 
     # Null Reference Velocity
     if kwargs.get('NullReferenceVelocity') is True:

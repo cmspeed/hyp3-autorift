@@ -355,8 +355,18 @@ def runGeogrid(
         obj.numberOfLines = info.numberOfLines
         obj.numberOfSamples = info.numberOfSamples
         obj.nodata_out = -32767
-        obj.chipSizeX0 = 240
-        obj.gridSpacingX = dem_info['geoTransform'][1]
+        # obj.chipSizeX0 = 240
+        # Override baseline chip size in meters if provided, else default to 240
+        if 'chipSizeX0' in kwargs and kwargs['chipSizeX0'] is not None:
+            obj.chipSizeX0 = int(kwargs['chipSizeX0'])
+        else:
+            obj.chipSizeX0 = 240
+        #obj.gridSpacingX = dem_info['geoTransform'][1]
+        # Override grid spacing if provided in kwargs, else use DEM default
+        if 'grid_spacing' in kwargs and kwargs['grid_spacing'] is not None:
+            obj.gridSpacingX = int(kwargs['grid_spacing'])
+        else:
+            obj.gridSpacingX = dem_info['geoTransform'][1]
 
         obj.dat1name = info.filename
         obj.demname = dem
@@ -371,20 +381,35 @@ def runGeogrid(
         obj.csmaxxname = csmaxx
         obj.csmaxyname = csmaxy
         obj.ssmname = ssm
-        # If chip size override is provided, use it
-        if 'ChipSizeX' in kwargs and kwargs['ChipSizeX'] is not None:
-            log.info(f"Geogrid: Overriding chip size with {kwargs['ChipSizeX']}")
-            # Set the integer-based properties on the object
-            obj.ChipSizeX = int(kwargs['ChipSizeX'])
-            if 'ChipSizeY' in kwargs and kwargs['ChipSizeY'] is not None:
-                obj.ChipSizeY = int(kwargs['ChipSizeY'])
-            else:
-                obj.ChipSizeY = int(kwargs['ChipSizeX'])
-            # Clear the tif-based properties to avoid conflicts
+        # # If chip size override is provided, use it
+        # if 'ChipSizeX' in kwargs and kwargs['ChipSizeX'] is not None:
+        #     log.info(f"Geogrid: Overriding chip size with {kwargs['ChipSizeX']}")
+        #     # Set the integer-based properties on the object
+        #     obj.ChipSizeX = int(kwargs['ChipSizeX'])
+        #     if 'ChipSizeY' in kwargs and kwargs['ChipSizeY'] is not None:
+        #         obj.ChipSizeY = int(kwargs['ChipSizeY'])
+        #     else:
+        #         obj.ChipSizeY = int(kwargs['ChipSizeX'])
+        #     # Clear the tif-based properties to avoid conflicts
+        #     obj.csminxname = None
+        #     obj.csminyname = None
+        #     obj.csmaxxname = None
+        #     obj.csmaxyname = None
+
+        # If manual chip sizes are provided, clear the TIF-based properties to avoid conflicts
+        if 'ChipSizeMinX' in kwargs or 'ChipSizeX' in kwargs:
+            log.info("Geogrid: Overriding shapefile chip sizes with kwargs")
             obj.csminxname = None
             obj.csminyname = None
             obj.csmaxxname = None
             obj.csmaxyname = None
+
+        # If manual search limits are provided, clear the TIF-based properties
+        if 'SearchLimitX' in kwargs and kwargs['SearchLimitX'] is not None:
+            log.info("Geogrid: Overriding shapefile search limits with kwargs")
+            obj.srxname = None
+            obj.sryname = None
+
         obj.winlocname = 'window_location.tif'
         obj.winoffname = 'window_offset.tif'
         obj.winsrname = 'window_search_range.tif'
@@ -440,8 +465,18 @@ def runGeogrid(
         obj.numberOfLines = info.numberOfLines
         obj.numberOfSamples = info.numberOfSamples
         obj.nodata_out = -32767
-        obj.chipSizeX0 = 240
-        obj.gridSpacingX = dem_info['geoTransform'][1]
+        # obj.chipSizeX0 = 240
+        # Override baseline chip size in meters if provided, else default to 240
+        if 'chipSizeX0' in kwargs and kwargs['chipSizeX0'] is not None:
+            obj.chipSizeX0 = int(kwargs['chipSizeX0'])
+        else:
+            obj.chipSizeX0 = 240
+        #obj.gridSpacingX = dem_info['geoTransform'][1]
+        # Override grid spacing if provided in kwargs, else use DEM default
+        if 'grid_spacing' in kwargs and kwargs['grid_spacing'] is not None:
+            obj.gridSpacingX = int(kwargs['grid_spacing'])
+        else:
+            obj.gridSpacingX = dem_info['geoTransform'][1]
         obj.orbit = info.orbit
         obj.demname = dem
         obj.dhdxname = dhdx
@@ -455,20 +490,35 @@ def runGeogrid(
         obj.csmaxxname = csmaxx
         obj.csmaxyname = csmaxy
         obj.ssmname = ssm
-        # If chip size override is provided, use it
-        if 'ChipSizeX' in kwargs and kwargs['ChipSizeX'] is not None:
-            log.info(f"Geogrid: Overriding chip size with {kwargs['ChipSizeX']}")
-            # Set the integer-based properties on the object
-            obj.ChipSizeX = int(kwargs['ChipSizeX'])
-            if 'ChipSizeY' in kwargs and kwargs['ChipSizeY'] is not None:
-                obj.ChipSizeY = int(kwargs['ChipSizeY'])
-            else:
-                obj.ChipSizeY = int(kwargs['ChipSizeX'])
-            # Clear the tif-based properties to avoid conflicts
+        # # If chip size override is provided, use it
+        # if 'ChipSizeX' in kwargs and kwargs['ChipSizeX'] is not None:
+        #     log.info(f"Geogrid: Overriding chip size with {kwargs['ChipSizeX']}")
+        #     # Set the integer-based properties on the object
+        #     obj.ChipSizeX = int(kwargs['ChipSizeX'])
+        #     if 'ChipSizeY' in kwargs and kwargs['ChipSizeY'] is not None:
+        #         obj.ChipSizeY = int(kwargs['ChipSizeY'])
+        #     else:
+        #         obj.ChipSizeY = int(kwargs['ChipSizeX'])
+        #     # Clear the tif-based properties to avoid conflicts
+        #     obj.csminxname = None
+        #     obj.csminyname = None
+        #     obj.csmaxxname = None
+        #     obj.csmaxyname = None
+
+        # If manual chip sizes are provided, clear the TIF-based properties to avoid conflicts
+        if 'ChipSizeMinX' in kwargs or 'ChipSizeX' in kwargs:
+            log.info("Geogrid: Overriding shapefile chip sizes with kwargs")
             obj.csminxname = None
             obj.csminyname = None
             obj.csmaxxname = None
             obj.csmaxyname = None
+
+        # If manual search limits are provided, clear the TIF-based properties
+        if 'SearchLimitX' in kwargs and kwargs['SearchLimitX'] is not None:
+            log.info("Geogrid: Overriding shapefile search limits with kwargs")
+            obj.srxname = None
+            obj.sryname = None
+
         obj.winlocname = 'window_location.tif'
         obj.winoffname = 'window_offset.tif'
         obj.winsrname = 'window_search_range.tif'

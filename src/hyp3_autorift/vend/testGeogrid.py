@@ -367,6 +367,13 @@ def runGeogrid(
             obj.gridSpacingX = int(kwargs['grid_spacing'])
         else:
             obj.gridSpacingX = dem_info['geoTransform'][1]
+        # Geogrid's output grid IS the DEM grid; grid_spacing only tells autoRIFT the node spacing,
+        # so the two must agree or autoRIFT's pixel geometry (GridSpacingX) is wrong.
+        if abs(obj.gridSpacingX - abs(dem_info['geoTransform'][1])) > 1e-6:
+            log.warning(
+                f"grid_spacing={obj.gridSpacingX} differs from the DEM pixel size "
+                f"{abs(dem_info['geoTransform'][1])}; resample the DEM to the desired grid spacing"
+            )
 
         obj.dat1name = info.filename
         obj.demname = dem

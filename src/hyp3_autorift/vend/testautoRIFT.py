@@ -294,9 +294,18 @@ def runAutorift(
     preprocessing_methods=('hps', 'hps'),
     preprocessing_filter_width=5,
     zero_mask=None,
+    oversample_ratio=None,
+    min_search=None,
+    autorift_attributes=None,
 ):
     """
     Wire and run geogrid.
+
+    oversample_ratio: correlation-surface oversampling, an int for all chip sizes or a dict
+        {chip size in pixels: ratio}. None keeps this driver's default of 128 for every chip size.
+    min_search: autoRIFT's floor on non-zero search limits, in pixels (autoRIFT default: 6).
+    autorift_attributes: optional {name: value} overrides of other autoRIFT object attributes
+        (e.g. sparseSearchSampleRate, FracValid, FiltWidth); unknown names raise ValueError.
     """
     obj = autoRIFT()
 
@@ -485,8 +494,25 @@ def runAutorift(
         obj.I2[obj.I2 == 0] = 128
 
     # obj.OverSampleRatio = 64
-    obj.OverSampleRatio = 128
-    print("Overriding autoRIFT OverSampleRatio to 128")
+    if oversample_ratio is None:
+        obj.OverSampleRatio = 128
+        print("Overriding autoRIFT OverSampleRatio to 128")
+    elif isinstance(oversample_ratio, dict):
+        obj.OverSampleRatio = {int(k): int(v) for k, v in oversample_ratio.items()}
+        print(f"Using chip-size-dependent autoRIFT OverSampleRatio {obj.OverSampleRatio}")
+    else:
+        obj.OverSampleRatio = int(oversample_ratio)
+        print(f"Using autoRIFT OverSampleRatio {obj.OverSampleRatio}")
+
+    if min_search is not None:
+        obj.minSearch = int(min_search)
+        print(f"Using autoRIFT minSearch {obj.minSearch} px")
+
+    for name, value in (autorift_attributes or {}).items():
+        if not hasattr(obj, name):
+            raise ValueError(f'autoRIFT has no attribute "{name}"')
+        setattr(obj, name, value)
+        print(f"Overriding autoRIFT {name} = {value}")
     # OverSampleRatio can be assigned as a scalar (such as the above line) or as a Python dictionary below for
     # intelligent use (ChipSize-dependent). Here, four chip sizes are used: ChipSize0X*[1,2,4,8] and four
     # OverSampleRatio are considered [16,32,64,128]. The intelligent selection of OverSampleRatio (as a function of
@@ -614,8 +640,15 @@ def generateAutoriftProduct(
         Dx0 = band.ReadAsArray()
         band = ds.GetRasterBand(2)
         Dy0 = band.ReadAsArray()
+        offset_nodata = band.GetNoDataValue()
         band = None
         ds = None
+        # GeogridOptical writes the y a-priori offset in image-row units (positive = down = south for
+        # north-up images), but autoRIFT expects Dy0 positive up, and only radar is flipped in
+        # runAutorift. Without this, optical searches are centred on the mirrored N-S offset
+        # (verified with synthetic 15 px shifts: the correctly signed reference velocity finds 0 %).
+        if optical_flag == 1 and kwargs.get('CorrectOpticalDy0Sign', True):
+            Dy0 = np.where(Dy0 == offset_nodata, Dy0, -Dy0)
 
     if search_range is not None:
         ds = gdal.Open(search_range)
@@ -729,9 +762,17 @@ def generateAutoriftProduct(
             elif len(re.findall('LT0[45]_', name)) > 0:
                 preprocessing_methods[ii] = 'fft'
 
+        # Explicit choice for images whose names do not identify the sensor, e.g. images that were
+        # already Wallis-filtered by the caller ('wallis_fill' then means: no further filtering, use
+        # the <image>_zeroMask.<ext> files for the nodata mask).
+        if kwargs.get('PreprocessingMethods') is not None:
+            preprocessing_methods = list(kwargs['PreprocessingMethods'])
+
         zero_mask = None
-        indir_m_zero = f'{indir_m.split(".")[0]}_zeroMask.{indir_m.split(".")[1]}'
-        indir_s_zero = f'{indir_s.split(".")[0]}_zeroMask.{indir_s.split(".")[1]}'
+        m_root, m_ext = os.path.splitext(indir_m)
+        s_root, s_ext = os.path.splitext(indir_s)
+        indir_m_zero = f'{m_root}_zeroMask{m_ext}'
+        indir_s_zero = f'{s_root}_zeroMask{s_ext}'
         if os.path.exists(indir_m_zero) or os.path.exists(indir_s_zero):
             m_zero, s_zero = loadProductOptical(indir_m_zero, indir_s_zero)
             m_zero = m_zero.astype(np.uint8)
@@ -742,7 +783,7 @@ def generateAutoriftProduct(
 
         print(f'Using preprocessing methods {preprocessing_methods}')
 
-        nisar_flag = nc_sensor.startswith('NISAR')
+        nisar_flag = nc_sensor is not None and nc_sensor.startswith('NISAR')
         (
             Dx,
             Dy,
@@ -776,6 +817,9 @@ def generateAutoriftProduct(
             preprocessing_methods=preprocessing_methods,
             preprocessing_filter_width=preprocessing_filter_width,
             zero_mask=zero_mask,
+            oversample_ratio=kwargs.get('OverSampleRatio'),
+            min_search=kwargs.get('MinSearch'),
+            autorift_attributes=kwargs.get('AutoriftAttributes'),
         )
         if nc_sensor is not None:
             no.netCDF_packaging_intermediate(
@@ -848,6 +892,9 @@ def generateAutoriftProduct(
         outband = outRaster.GetRasterBand(4)
         outband.WriteArray(CHIPSIZEX)
         outband.FlushCache()
+        # Band meaning (optical: +x east, +y north in image pixels; radar: range/azimuth pixels)
+        for band_index, description in enumerate(('dx_px', 'dy_px', 'interp_mask', 'chip_size_x_px'), start=1):
+            outRaster.GetRasterBand(band_index).SetDescription(description)
         del outRaster
 
         if offset2vx is not None:
@@ -910,6 +957,8 @@ def generateAutoriftProduct(
             outband = outRaster.GetRasterBand(2)
             outband.WriteArray(VY)
             outband.FlushCache()
+            outRaster.GetRasterBand(1).SetDescription('vx_m_per_yr')
+            outRaster.GetRasterBand(2).SetDescription('vy_m_per_yr')
             del outRaster
 
             # prepare for netCDF packaging
